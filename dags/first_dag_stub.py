@@ -121,12 +121,16 @@ def _generate_class():
 
 def _generate_language():
     # get the list of languages from the api
+    MAX_LANGUAGES = 3
     try:
         url = "https://www.dnd5eapi.co/api/languages"
         response = get(url)
-        # choose a random language
+        # choose a random language because you said we could
         character_languages = [
-            response["results"][randint(0, response["count"] - 1)]["index"]
+            [
+                response["results"][randint(0, response["count"] - 1)]["index"]
+                for i in range(randint(1, MAX_LANGUAGES))
+            ]
             for _ in range(NUM_CHARACTERS)
         ]
         logging.info(f"Created language: {character_languages}")
@@ -211,6 +215,7 @@ create_spells = DummyOperator(
 remove_previous_characters = DummyOperator(
     task_id="remove_previous_characters",
     dag=first_dag,
+    trigger_rule="none_failed",
 )
 
 add_new_characters = DummyOperator(
@@ -223,17 +228,16 @@ end = DummyOperator(
     trigger_rule="none_failed",
 )
 
-creation_tasks = [
-    create_name,
-    create_attributes,
-    create_languages,
-    create_class,
-    create_proficiency,
-    create_race,
-    create_level,
-]
-start >> creation_tasks
-creation_tasks >> create_spells
-create_spells >> remove_previous_characters
+
+start >> create_name >> remove_previous_characters
+start >> create_attributes >> remove_previous_characters
+start >> create_class >> create_spells >> remove_previous_characters
+
+# Technically you would need the race to have the languages which is why I put the workflow like that
+# however in the end I decided not to use the race to get the languages because it is not required 
+# in the assignment and I do not feel like going above and beyond today.
+start >> create_race >> create_languages >> remove_previous_characters
+start >> create_level >> remove_previous_characters
 remove_previous_characters >> add_new_characters
+[create_class, create_race] >> create_proficiency >> remove_previous_characters
 add_new_characters >> end
