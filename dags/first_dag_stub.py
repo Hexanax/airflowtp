@@ -4,9 +4,8 @@ from warnings import catch_warnings
 import airflow
 import datetime
 from airflow import DAG
-from airflow.operators.bash_operator import BashOperator
 from airflow.operators.dummy_operator import DummyOperator
-from airflow.operators.python_operator import PythonOperator
+from airflow.operators.python_operator import PythonOperator, BranchPythonOperator
 import urllib.request as request
 from faker import Faker  # for creating fake names
 import logging  # for logging in airflow
@@ -60,7 +59,11 @@ def read_json(file_name):
     with open(f"dags/temp/{file_name}.json") as json_file:
         return json.load(json_file)
 
-
+def _check_table():
+    if "table" == "exists":
+        return "remove_previous_characters"
+    else:
+        "create_table"
 def _generate_name():
     fake = Faker()
     names = [fake.name() for _ in range(NUM_CHARACTERS)]
@@ -126,13 +129,13 @@ def _generate_language():
         url = "https://www.dnd5eapi.co/api/languages"
         response = get(url)
         # choose a random language because you said we could
-        character_languages = [
+        character_languages =', '.join([
             [
                 response["results"][randint(0, response["count"] - 1)]["index"]
                 for i in range(randint(1, MAX_LANGUAGES))
             ]
             for _ in range(NUM_CHARACTERS)
-        ]
+        ])
         logging.info(f"Created language: {character_languages}")
     except Exception:
         logging.info(f"Error retrieving languages: {Exception}")
@@ -180,7 +183,7 @@ def _generate_proficiencies():
 
         # I noticed there were optional proficiencies, I will not include. I hope this is fine.
 
-        proficiencies.append(character_proficiencies)
+        proficiencies.append(', '.join(character_proficiencies))
 
     try:
         # choose a random proficiencie
@@ -219,7 +222,7 @@ def _generate_spell():
         response = get(f"https://www.dnd5eapi.co/api/classes/{c}/spells")
 
         if len(response["results"]) == 0:  # skip classes with no spells
-            spells.append([])
+            spells.append("")
             continue
 
         # compute the list of spells that are both allowed by the class and level
@@ -235,7 +238,7 @@ def _generate_spell():
 
         if len(allowed_spells) == 0:
             # no point in continuinig if this is empty
-            spells.append([])
+            spells.append("")
             continue
 
         # randomly select some spells
@@ -243,7 +246,7 @@ def _generate_spell():
             allowed_spells.pop(randint(0, len(allowed_spells) - 1))
             for _ in range(l)
         ]
-        spells.append(character_spells)
+        spells.append(', '.join(character_spells))
     # save the spells
     try:
         save_json(spells, "spells")
@@ -304,8 +307,21 @@ create_spells = PythonOperator(
     python_callable=_generate_spell,
 )
 
+check_db = BranchPythonOperator(
+    task_id='check_database',
+    dag=first_dag,
+    python_callable=_check_table,
+    trigger_rule='all_success',
+)
+
 remove_previous_characters = DummyOperator(
     task_id="remove_previous_characters",
+    dag=first_dag,
+    trigger_rule="none_failed",
+)
+
+create_table = DummyOperator(
+    task_id="create_table",
     dag=first_dag,
     trigger_rule="none_failed",
 )
@@ -320,16 +336,20 @@ end = DummyOperator(
     trigger_rule="none_failed",
 )
 
-
-start >> create_name >> remove_previous_characters
-start >> create_attributes >> remove_previous_characters
-start >> create_class >> create_spells >> remove_previous_characters
-
+# character creation
+start >> create_name >> check_db
+start >> create_attributes >> check_db
+start >> create_class >> create_spells >> check_db
 # Technically you would need the race to have the languages which is why I put the workflow like that
 # however in the end I decided not to use the race to get the languages because it is not required
 # in the assignment and I do not feel like going above and beyond today.
-start >> create_race >> create_languages >> remove_previous_characters
-start >> create_level >> remove_previous_characters
-remove_previous_characters >> add_new_characters
-[create_class, create_race] >> create_proficiency >> remove_previous_characters
+start >> create_race >> create_languages >> check_db
+start >> create_level >> check_db
+[create_class, create_race] >> create_proficiency >> check_db
+
+# persistence of characters
+check_db >> [remove_previous_characters, create_table]
+[remove_previous_characters, create_table] >> add_new_characters
+
+# end
 add_new_characters >> end
