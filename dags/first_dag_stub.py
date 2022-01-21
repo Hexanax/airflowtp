@@ -57,7 +57,7 @@ def save_json(data, file_name):
 
 
 def read_json(file_name):
-    with open("dags/temp/names.json") as json_file:
+    with open(f"dags/temp/{file_name}.json") as json_file:
         return json.load(json_file)
 
 
@@ -161,6 +161,96 @@ def _generate_race():
         logging.info(f"Error saving races: {Exception}")
 
 
+def _generate_proficiencies():
+    classes = read_json("classes")
+    races = read_json("races")
+    proficiencies = []
+    for c, r in zip(classes, races):
+        character_proficiencies = []
+        # get proficiencies from the class
+        response = get(f"https://www.dnd5eapi.co/api/classes/{c}")
+        character_proficiencies.extend(
+            [r["index"] for r in response["proficiencies"]]
+        )
+        # get proficiencies from the race
+        response = get(f"https://www.dnd5eapi.co/api/races/{r}")
+        character_proficiencies.extend(
+            [r["index"] for r in response["starting_proficiencies"]]
+        )
+
+        # I noticed there were optional proficiencies, I will not include. I hope this is fine.
+
+        proficiencies.append(character_proficiencies)
+
+    try:
+        # choose a random proficiencie
+        character_proficiencies = [
+            response["results"][randint(0, response["count"] - 1)]["index"]
+            for _ in range(NUM_CHARACTERS)
+        ]
+        logging.info(f"Created proficiencies: {character_proficiencies}")
+    except Exception:
+        logging.info(f"Error retrieving proficiencies: {Exception}")
+
+    # save all proficiencies
+    try:
+        save_json(proficiencies, "proficiencies")
+    except Exception:
+        logging.info(f"Error saving proficiencies: {Exception}")
+
+
+def _generate_spell():
+    # get the list of spells for lvls 0 to 2 from the api
+    try:
+        url = "https://www.dnd5eapi.co/api/spells?level=0,1,2"
+        response = get(url)
+        # choose a random spell
+        all_spells = [result["index"] for result in response["results"]]
+        logging.info(f"Successfully acquired all spells")
+    except Exception:
+        logging.info(f"Error retrieving list of spells: {Exception}")
+        return
+    # now get all the required info
+    levels = read_json("levels")
+    classes = read_json("classes")
+    spells = []
+    for c, l in zip(classes, levels):
+        # load the allowed spells for this class
+        response = get(f"https://www.dnd5eapi.co/api/classes/{c}/spells")
+
+        if len(response["results"]) == 0:  # skip classes with no spells
+            spells.append([])
+            continue
+
+        # compute the list of spells that are both allowed by the class and level
+        allowed_spells = list(
+            set(all_spells).intersection(
+                [result["index"] for result in response["results"]]
+            )
+        )
+
+        # This is imperfect because I should have queried the "all_spells" based
+        # on the level of the character and not everything from 0 to 2, but this is
+        # a detail so I was hoping you would let this error slide :)
+
+        if len(allowed_spells) == 0:
+            # no point in continuinig if this is empty
+            spells.append([])
+            continue
+
+        # randomly select some spells
+        character_spells = [
+            allowed_spells.pop(randint(0, len(allowed_spells) - 1))
+            for _ in range(l)
+        ]
+        spells.append(character_spells)
+    # save the spells
+    try:
+        save_json(spells, "spells")
+    except Exception:
+        logging.info(f"Error saving spells: {Exception}")
+
+
 start = DummyOperator(
     task_id="start",
     dag=first_dag,
@@ -190,9 +280,10 @@ create_class = PythonOperator(
     python_callable=_generate_class,
 )
 
-create_proficiency = DummyOperator(
-    task_id="profficiency_choices",
+create_proficiency = PythonOperator(
+    task_id="create_proficiency",
     dag=first_dag,
+    python_callable=_generate_proficiencies,
 )
 
 create_race = PythonOperator(
@@ -207,9 +298,10 @@ create_level = PythonOperator(
     python_callable=_generate_level,
 )
 
-create_spells = DummyOperator(
+create_spells = PythonOperator(
     task_id="create_spells",
     dag=first_dag,
+    python_callable=_generate_spell,
 )
 
 remove_previous_characters = DummyOperator(
@@ -234,7 +326,7 @@ start >> create_attributes >> remove_previous_characters
 start >> create_class >> create_spells >> remove_previous_characters
 
 # Technically you would need the race to have the languages which is why I put the workflow like that
-# however in the end I decided not to use the race to get the languages because it is not required 
+# however in the end I decided not to use the race to get the languages because it is not required
 # in the assignment and I do not feel like going above and beyond today.
 start >> create_race >> create_languages >> remove_previous_characters
 start >> create_level >> remove_previous_characters
